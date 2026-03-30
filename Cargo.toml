@@ -1,0 +1,21 @@
+[package]
+name = "dorfconf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+
+[dependencies.rust-uci]
+git = "https://github.com/namib-project/rust-uci"
+rev = "e294efbe1a2740ff6e42b71214485fbeb33faf67"
+
+[features]
+vendor-uci = ["rust-uci/vendored"]
+
+[profile.release]
+# minimize binary size based on https://github.com/johnthagen/min-sized-rust
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
