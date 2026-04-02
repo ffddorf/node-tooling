@@ -70,7 +70,7 @@ impl Configurator {
         F: Fn(&mut Uci, &str) -> anyhow::Result<bool> + 'a,
     {
         let sections = self.uci.get_sections(package)?;
-        let logical = sections.into_iter().filter_map(move |section| {
+        let matching_sections = sections.into_iter().filter_map(move |section| {
             if self.uci.get(&format!("{package}.{section}")).ok()? == section_type
                 && predicate(&mut self.uci, &section).ok()?
             {
@@ -78,7 +78,7 @@ impl Configurator {
             }
             None
         });
-        Ok(logical)
+        Ok(matching_sections)
     }
 
     pub fn setup_batman(&mut self) -> anyhow::Result<()> {
@@ -97,7 +97,9 @@ impl Configurator {
             })?
             .next()
         else {
-            return Err(anyhow!("Unable to find device for LAN bridge in config"));
+            return Err(anyhow!(
+                r#"Unable to find device for LAN bridge "{bridge_name}" in config"#
+            ));
         };
 
         self.uci
@@ -132,20 +134,13 @@ impl Configurator {
             .args(["--generate-key", "--machine-readable"])
             .output()?;
         if !gen_out.status.success() {
+            let stderr = String::from_utf8_lossy(&gen_out.stderr);
             return match (gen_out.status.code(), gen_out.status.signal()) {
                 (_, Some(signal)) => Err(anyhow!(
-                    "Failed to run fastd. Terminated with signal {}",
-                    signal
+                    "Failed to run fastd. Terminated with signal {signal}\n{stderr}",
                 )),
-                (Some(code), _) => Err(anyhow!(
-                    "Failed to run fastd. Exit {}\n{}",
-                    code,
-                    String::from_utf8_lossy(&gen_out.stderr)
-                )),
-                _ => Err(anyhow!(
-                    "Failed to run fastd.\n{}",
-                    String::from_utf8_lossy(&gen_out.stderr)
-                )),
+                (Some(code), _) => Err(anyhow!("Failed to run fastd. Exit {code}\n{stderr}")),
+                _ => Err(anyhow!("Failed to run fastd.\n{stderr}")),
             };
         }
 
