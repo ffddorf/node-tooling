@@ -67,7 +67,7 @@ impl Configurator {
         predicate: F,
     ) -> anyhow::Result<impl Iterator<Item = String> + 'a>
     where
-        F: Fn(&mut Uci, &str) -> anyhow::Result<bool> + 'static,
+        F: Fn(&mut Uci, &str) -> anyhow::Result<bool> + 'a,
     {
         let sections = self.uci.get_sections(package)?;
         let logical = sections.into_iter().filter_map(move |section| {
@@ -92,7 +92,7 @@ impl Configurator {
         let bridge_name = self.uci.get("network.lan.device")?;
 
         let Some(bridge_dev) = self
-            .find_sections("network", "device", move |uci, dev| {
+            .find_sections("network", "device", |uci, dev| {
                 Ok(uci.get(&format!("network.{dev}.name"))? == bridge_name)
             })?
             .next()
