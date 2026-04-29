@@ -21,15 +21,28 @@ const DEFAULT_TARGETS: &[&str] = &["mipsel-unknown-linux-musl"];
 
 fn main() -> anyhow::Result<()> {
     let input = Cli::parse();
+
+    // todo: take override from command line arg
+    let targets = DEFAULT_TARGETS.into_iter().map(Deref::deref);
+    let profile = "debug";
+
     match input.command {
-        Command::Build => build(DEFAULT_TARGETS.into_iter().map(Deref::deref))?,
+        Command::Build => {
+            let target_num = build(targets, profile)?;
+            if target_num == 0 {
+                eprintln!("Warning: No targets built!")
+            }
+        }
         Command::Package => todo!("package"),
     }
 
     Ok(())
 }
 
-fn build<'a>(targets: impl IntoIterator<Item = &'a str>) -> anyhow::Result<()> {
+fn build<'a>(
+    targets: impl IntoIterator<Item = &'a str>,
+    profile: &'a str,
+) -> anyhow::Result<usize> {
     let cross_installed = which::which("cross").is_ok();
     if !cross_installed {
         return Err(anyhow!(
@@ -40,15 +53,27 @@ fn build<'a>(targets: impl IntoIterator<Item = &'a str>) -> anyhow::Result<()> {
     let handles = targets
         .into_iter()
         .map(|t| {
-            duct::cmd("cross", &["build", "--package", "dorfconf", "--target", t])
-                .stdout_to_stderr()
-                .stderr_capture()
-                .unchecked()
-                .start()
-                .map(|h| (t, h))
+            duct::cmd(
+                "cross",
+                &[
+                    "build",
+                    "--package",
+                    "dorfconf",
+                    "--profile",
+                    profile,
+                    "--target",
+                    t,
+                ],
+            )
+            .stdout_to_stderr()
+            .stderr_capture()
+            .unchecked()
+            .start()
+            .map(|h| (t, h))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    let target_num = handles.len();
     for (target, handle) in handles {
         eprintln!("Target: {target}");
         let out = handle.wait()?;
@@ -63,5 +88,5 @@ fn build<'a>(targets: impl IntoIterator<Item = &'a str>) -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
+    Ok(target_num)
 }
