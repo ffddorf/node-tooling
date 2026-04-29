@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["dorfconf"]
+members = ["dorfconf", "xtask"]
 
 [profile.release]
 # minimize binary size based on https://github.com/johnthagen/min-sized-rust
