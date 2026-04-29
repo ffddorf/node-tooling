@@ -1,7 +1,13 @@
-use std::ops::Deref;
+use std::{
+    fs::{self, create_dir_all},
+    ops::Deref,
+    path::PathBuf,
+};
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand};
+use tempdir::TempDir;
+use wolfpack::ipk::{self, Package, PackageSigner};
 
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "cargo-xtask")]
@@ -33,7 +39,7 @@ fn main() -> anyhow::Result<()> {
                 eprintln!("Warning: No targets built!")
             }
         }
-        Command::Package => todo!("package"),
+        Command::Package => package(targets, profile)?,
     }
 
     Ok(())
@@ -89,4 +95,74 @@ fn build<'a>(
     }
 
     Ok(target_num)
+}
+
+fn target_to_arch(target: &str) -> anyhow::Result<ipk::Arch> {
+    use wolfpack::ipk::Arch;
+    let arch = match target {
+        "mipsel-unknown-linux-musl" => Arch::Mipsel,
+        _ => return Err(anyhow!("Unable to turn target into arch: {}", target)),
+    };
+    Ok(arch)
+}
+
+fn package_meta(target: &str) -> anyhow::Result<Package> {
+    Ok(Package {
+        name: "dorfconf".parse()?,
+        version: "0.1.0".parse()?,
+        license: "Apache 2.0".parse()?,
+        arch: target_to_arch(target)?,
+        maintainer: "Freifunk Düsseldorf".parse()?,
+        description: "Configures OpenWRT for using the Freifunk Düsseldorf Mesh".into(),
+        installed_size: Default::default(),
+        provides: Default::default(),
+        depends: Default::default(),
+        other: Default::default(),
+    })
+}
+
+fn dummy_signer() -> PackageSigner {
+    PackageSigner::generate(None)
+}
+
+fn package<'a>(targets: impl IntoIterator<Item = &'a str>, profile: &'a str) -> anyhow::Result<()> {
+    let bin_files = targets
+        .into_iter()
+        .map(|target| {
+            (
+                target,
+                PathBuf::from(format!("target/{target}/{profile}/dorfconf")),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let missing_targets = bin_files
+        .iter()
+        .filter_map(|(t, p)| if !p.exists() { Some(*t) } else { None })
+        .collect::<Vec<_>>();
+    let expected_target_count = missing_targets.len();
+    let build_target_count = build(missing_targets, profile).context("building binary")?;
+    if build_target_count < expected_target_count {
+        return Err(anyhow!("At least one build failed"));
+    }
+
+    let signer = dummy_signer();
+
+    for (target, bin) in bin_files {
+        eprintln!("Packaging {target}...");
+
+        let dir = TempDir::new(&format!("dorfconf-pkg-{target}")).context("creating tempdir")?;
+
+        let bin_path = dir.path().join("usr/bin");
+        create_dir_all(&bin_path).context("creating tmp bin dir")?;
+        fs::copy(bin, bin_path.join("dorfconf")).context("copying binary")?;
+
+        let pkg = package_meta(target).context("package metadata")?;
+        let out_file = PathBuf::new()
+            .join("dist")
+            .join(format!("dorfconf_{target}"));
+        pkg.write(out_file, dir, &signer).context("writing ipk")?;
+    }
+
+    Ok(())
 }

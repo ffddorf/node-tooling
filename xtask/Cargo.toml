@@ -7,7 +7,9 @@ edition = "2024"
 anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive"] }
 duct = "1.1.1"
+tempdir = "0.3.7"
 which = "8.0.2"
+wolfpack = "0.3.1"
 
 [features]
 ide-defaults = []
