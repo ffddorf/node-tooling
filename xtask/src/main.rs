@@ -1,9 +1,11 @@
 use std::{
-    borrow::Borrow,
+    error::Error,
+    fmt::Display,
     fs::{self, create_dir_all},
     io::Write,
     os::unix::fs::OpenOptionsExt,
     path::PathBuf,
+    str::FromStr,
 };
 
 use anyhow::{Context, anyhow};
@@ -25,26 +27,49 @@ enum Command {
     Package,
 }
 
-const DEFAULT_ARCHS: &[&str] = &["mipsel_24kc"];
+const DEFAULT_ARCHS: &[OpenWrtArch] = &[OpenWrtArch::Mipsel24kc];
 
-struct ArchInfo {
-    name: &'static str,
-    rust_target: &'static str,
+#[non_exhaustive]
+#[derive(Copy, Clone)]
+enum OpenWrtArch {
+    Mipsel24kc,
 }
 
-fn instruction_set_info(instruction_set: &str) -> ArchInfo {
-    // this list is incomplete - some architectures are not supported
-    // for a full list, see
-    // https://openwrt.org/docs/techref/instructionset/start#all_instruction_sets
-    match instruction_set {
-        "mipsel_24kc" => ArchInfo {
-            name: "mipsel_24kc",
-            rust_target: "mipsel-unknown-linux-musl",
-        },
-        _ => unimplemented!(
-            "Instruction set {} is currently not supported",
-            instruction_set
-        ),
+impl OpenWrtArch {
+    pub fn rust_target(&self) -> &'static str {
+        match self {
+            OpenWrtArch::Mipsel24kc => "mipsel-unknown-linux-musl",
+        }
+    }
+}
+
+impl Display for OpenWrtArch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenWrtArch::Mipsel24kc => f.write_str("mipsel_24kc"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct UnsupportedArch(String);
+
+impl Error for UnsupportedArch {}
+
+impl Display for UnsupportedArch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Architecture not supported: {}", self.0)
+    }
+}
+
+impl FromStr for OpenWrtArch {
+    type Err = UnsupportedArch;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "mipsel_24kc" => Ok(Self::Mipsel24kc),
+            _ => Err(UnsupportedArch(s.to_owned())),
+        }
     }
 }
 
@@ -52,25 +77,49 @@ fn main() -> anyhow::Result<()> {
     let input = Cli::parse();
 
     // todo: take override from command line arg
-    let archs = DEFAULT_ARCHS.into_iter().map(|a| instruction_set_info(*a));
-    let profile = "debug";
+    let archs = DEFAULT_ARCHS;
+    let profile = Profile::Debug;
 
     match input.command {
         Command::Build => {
-            let target_num = build(archs, profile)?;
+            let target_num = build(archs.iter().copied(), profile)?;
             if target_num == 0 {
                 eprintln!("Warning: No targets built!")
             }
         }
-        Command::Package => package(archs, profile)?,
+        Command::Package => package(archs.iter().copied(), profile)?,
     }
 
     Ok(())
 }
 
-fn build<'a, Arch: Borrow<ArchInfo>>(
-    archs: impl IntoIterator<Item = Arch>,
-    profile: &'a str,
+enum Profile {
+    Debug,
+    Release,
+    Custom(String),
+}
+
+impl Profile {
+    pub fn target_subdir(&self) -> &str {
+        match self {
+            Profile::Debug => "debug",
+            Profile::Release => "release",
+            Profile::Custom(custom) => custom,
+        }
+    }
+
+    pub fn cargo_arg(&self) -> Box<[&str]> {
+        match self {
+            Profile::Debug => [].into(),
+            Profile::Release => ["--release"].into(),
+            Profile::Custom(custom) => ["--profile", custom].into(),
+        }
+    }
+}
+
+fn build<'a>(
+    archs: impl IntoIterator<Item = OpenWrtArch>,
+    profile: Profile,
 ) -> anyhow::Result<usize> {
     let cross_installed = which::which("cross").is_ok();
     if !cross_installed {
@@ -82,29 +131,26 @@ fn build<'a, Arch: Borrow<ArchInfo>>(
     let handles = archs
         .into_iter()
         .map(|a| {
-            duct::cmd(
-                "cross",
-                &[
-                    "build",
-                    "--package",
-                    "dorfconf",
-                    "--profile",
-                    profile,
-                    "--target",
-                    a.borrow().rust_target,
-                ],
-            )
-            .stdout_to_stderr()
-            .stderr_capture()
-            .unchecked()
-            .start()
-            .map(|h| (a, h))
+            let mut args = vec![
+                "build",
+                "--package",
+                "dorfconf",
+                "--target",
+                a.rust_target(),
+            ];
+            args.extend_from_slice(&profile.cargo_arg());
+            duct::cmd("cross", &args)
+                .stdout_to_stderr()
+                .stderr_capture()
+                .unchecked()
+                .start()
+                .map(|h| (a, h))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     let target_num = handles.len();
     for (arch, handle) in handles {
-        eprintln!("Arch: {}", arch.borrow().name);
+        eprintln!("Arch: {arch}");
         let out = handle.wait()?;
         if out.status.success() {
             eprintln!("✅ Built!")
@@ -120,7 +166,7 @@ fn build<'a, Arch: Borrow<ArchInfo>>(
     Ok(target_num)
 }
 
-fn package_meta(arch: &str) -> anyhow::Result<Package> {
+fn package_meta(arch: OpenWrtArch) -> anyhow::Result<Package> {
     let pkg = Package {
         name: "dorfconf".parse()?,
         version: "0.1.0".parse()?,
@@ -141,18 +187,25 @@ fn dummy_signer() -> PackageSigner {
     PackageSigner::generate(None)
 }
 
-fn package<'a>(archs: impl IntoIterator<Item = ArchInfo>, profile: &'a str) -> anyhow::Result<()> {
+fn package<'a>(
+    archs: impl IntoIterator<Item = OpenWrtArch>,
+    profile: Profile,
+) -> anyhow::Result<()> {
     let bin_files = archs
         .into_iter()
         .map(|arch| {
-            let path = format!("target/{}/{}/dorfconf", arch.rust_target, profile);
+            let path = format!(
+                "target/{}/{}/dorfconf",
+                arch.rust_target(),
+                profile.target_subdir()
+            );
             (arch, PathBuf::from(path))
         })
         .collect::<Vec<_>>();
 
     let missing_targets = bin_files
         .iter()
-        .filter_map(|(t, p)| if !p.exists() { Some(t) } else { None })
+        .filter_map(|(t, p)| if !p.exists() { Some(*t) } else { None })
         .collect::<Vec<_>>();
     let expected_target_count = missing_targets.len();
     let build_target_count = build(missing_targets, profile).context("building binary")?;
@@ -163,10 +216,9 @@ fn package<'a>(archs: impl IntoIterator<Item = ArchInfo>, profile: &'a str) -> a
     let signer = dummy_signer();
 
     for (arch, bin) in bin_files {
-        eprintln!("Packaging {}...", arch.name);
+        eprintln!("Packaging {}...", arch);
 
-        let dir =
-            TempDir::new(&format!("dorfconf-pkg-{}", arch.name)).context("creating tempdir")?;
+        let dir = TempDir::new(&format!("dorfconf-pkg-{}", arch)).context("creating tempdir")?;
 
         let bin_path = dir.path().join("usr/bin");
         create_dir_all(&bin_path).context("creating tmp bin dir")?;
@@ -183,10 +235,10 @@ fn package<'a>(archs: impl IntoIterator<Item = ArchInfo>, profile: &'a str) -> a
             write!(&mut uci_default_script, "#!/bin/sh\nexec dorfconfig")?;
         }
 
-        let pkg = package_meta(arch.name).context("package metadata")?;
+        let pkg = package_meta(arch).context("package metadata")?;
         let out_file = PathBuf::new()
             .join("dist")
-            .join(format!("dorfconf_{}.ipk", arch.name));
+            .join(format!("dorfconf_{}.ipk", arch));
         pkg.write(out_file, dir, &signer).context("writing ipk")?;
     }
 
