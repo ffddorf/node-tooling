@@ -5,7 +5,7 @@ use core::net;
 use std::{os::unix::process::ExitStatusExt, process::Command};
 
 use anyhow::anyhow;
-use rust_uci::Uci;
+use rust_uci::{Uci, config::Config as UciConfig};
 
 fn main() -> anyhow::Result<()> {
     let uci = Uci::new()?;
@@ -18,7 +18,7 @@ fn main() -> anyhow::Result<()> {
         )],
     };
 
-    let mut conf = Configurator::new(uci, config);
+    let mut conf = Configurator::new(uci.into(), config);
     conf.setup_batman()?;
     conf.setup_lan()?;
     conf.setup_fastd()?;
@@ -48,84 +48,84 @@ struct Config {
 }
 
 struct Configurator {
-    uci: Uci,
+    uci: UciConfig,
     config: Config,
 }
 
 impl Configurator {
-    pub fn new(uci: Uci, config: Config) -> Self {
-        Self {
-            uci: uci.into(),
-            config,
-        }
+    pub fn new(uci: UciConfig, config: Config) -> Self {
+        Self { uci, config }
     }
 
-    fn find_sections<'a, F>(
-        &'a mut self,
-        package: &'a str,
-        section_type: &'a str,
-        predicate: F,
-    ) -> anyhow::Result<impl Iterator<Item = String> + 'a>
-    where
-        F: Fn(&mut Uci, &str) -> anyhow::Result<bool> + 'a,
-    {
-        let sections = self.uci.get_sections(package)?;
-        let matching_sections = sections.into_iter().filter_map(move |section| {
-            if self.uci.get(&format!("{package}.{section}")).ok()? == section_type
-                && predicate(&mut self.uci, &section).ok()?
-            {
-                return Some(section);
-            }
-            None
-        });
-        Ok(matching_sections)
-    }
+    pub fn setup_batman(&self) -> anyhow::Result<()> {
+        let mut network = self
+            .uci
+            .package("network")?
+            .ok_or_else(|| anyhow!("Package network missing"))?;
 
-    pub fn setup_batman(&mut self) -> anyhow::Result<()> {
         // create interface
-        self.uci.set("network.bat0", "interface")?;
-        self.uci.set("network.bat0.proto", "batadv")?;
-        self.uci.set("network.bat0.routing_algo", "BATMAN_IV")?;
-        self.uci.set("network.bat0.gw_mode", "client")?;
+        let mut bat0 = network.section("interface", "bat0")?;
+        bat0.option_mut("proto")?.set("batadv")?;
+        bat0.option_mut("routing_algo")?.set("BATMAN_IV")?;
+        bat0.option_mut("gw_mode")?.set("client")?;
 
         // add to lan bridge
-        let bridge_name = self.uci.get("network.lan.device")?;
-
-        let Some(bridge_dev) = self
-            .find_sections("network", "device", |uci, dev| {
-                Ok(uci.get(&format!("network.{dev}.name"))? == bridge_name)
-            })?
+        let bridge_name = network
+            .section("interface", "lan")?
+            .option("device")?
+            .get()?
+            .ok_or_else(|| anyhow!("LAN bridge not found"))?;
+        let mut bridge_dev = network
+            .sections_by_type("device")?
+            .filter_map(|s| {
+                s.option("name")
+                    .ok()?
+                    .get()
+                    .ok()?
+                    .filter(|val| val == &bridge_name)
+                    .map(|_| s)
+            })
             .next()
-        else {
-            return Err(anyhow!(
-                r#"Unable to find device for LAN bridge "{bridge_name}" in config"#
-            ));
-        };
+            .ok_or_else(|| {
+                anyhow!(r#"Unable to find device for LAN bridge {bridge_name:?} in config"#)
+            })?;
+        bridge_dev.option_mut("ports")?.add_list("bat0")?;
 
-        self.uci
-            .add_list(format!("network.{bridge_dev}.ports"), "bat0")?;
-
-        self.uci.commit("network")?;
+        network.save()?;
+        network.commit()?;
         Ok(())
     }
 
     // Configure lan bridge interface to be a regular client in the mesh
     pub fn setup_lan(&mut self) -> anyhow::Result<()> {
+        let mut network = self
+            .uci
+            .package("network")?
+            .ok_or_else(|| anyhow!("Package network missing"))?;
+
         // disable the default lan config
-        self.uci.set("network.lan.proto", "none")?;
+        let mut lan = network.section("interface", "lan")?;
+        lan.option_mut("proto")?.set("none")?;
 
         // add a special v6only client config
-        let bridge_name = self.uci.get("network.lan.device")?;
-        self.uci.set("network.node6", "interface")?;
-        self.uci.set("network.node6.device", &bridge_name)?;
-        self.uci.set("network.node6.proto", "dhcpv6")?;
-        self.uci.set("network.node6.accept_ra", "1")?;
-        self.uci.set("network.node6.force_link", "1")?;
-        self.uci.set("network.node6.bridge_empty", "1")?;
-        self.uci.set("network.node6.defaultroute", "0")?;
-        self.uci.set("network.node6.reqprefix", "no")?;
+        let bridge_name_opt = lan
+            .option("device")?
+            .get()?
+            .ok_or_else(|| anyhow!("LAN bridge not found"))?;
+        let bridge_name = bridge_name_opt
+            .to_str()
+            .ok_or_else(|| anyhow!("Invalid value for bridge_name"))?;
+        let mut node6 = network.section("interface", "node6")?;
+        node6.option_mut("device")?.set(&bridge_name)?;
+        node6.option_mut("proto")?.set("dhcpv6")?;
+        node6.option_mut("accept_ra")?.set("1")?;
+        node6.option_mut("force_link")?.set("1")?;
+        node6.option_mut("bridge_empty")?.set("1")?;
+        node6.option_mut("defaultroute")?.set("0")?;
+        node6.option_mut("reqprefix")?.set("no")?;
 
-        self.uci.commit("network")?;
+        network.save()?;
+        network.commit()?;
         Ok(())
     }
 
@@ -150,68 +150,82 @@ impl Configurator {
     pub fn setup_fastd(&mut self) -> anyhow::Result<()> {
         // basic settings
         let fastd_secret_key = Self::fastd_gen_key()?;
-        self.uci.set("fastd.meshvpn", "fastd")?;
-        self.uci.set("fastd.meshvpn.enabled", "1")?;
-        self.uci.set("fastd.meshvpn.syslog_level", "info")?;
-        self.uci.set("fastd.meshvpn.method", "null@l2tp")?;
-        self.uci.set("fastd.meshvpn.offload_l2tp", "1")?;
-        self.uci.set("fastd.meshvpn.mtu", "1364")?;
-        self.uci.set("fastd.meshvpn.interface", "mesh-vpn")?;
-        self.uci.set("fastd.meshvpn.secret", &fastd_secret_key)?;
-        self.uci.set("fastd.meshvpn.forward", "0")?;
-        self.uci.set("fastd.meshvpn.persist_interface", "0")?;
-        self.uci.set(
-            "fastd.meshvpn.on_up",
-            "ip link set dev $INTERFACE master bat0 && ip link set dev $INTERFACE up",
-        )?;
+        let mut fastd = self.uci.package("fastd")?.ok_or_else(|| {
+            anyhow!("fastd config package not found, consider installing the package")
+        })?;
+        let mut meshvpn = fastd.section("fastd", "meshvpn")?;
+        meshvpn.option_mut("enabled")?.set("1")?;
+        meshvpn.option_mut("syslog_level")?.set("info")?;
+        meshvpn.option_mut("method")?.set("null@l2tp")?;
+        meshvpn.option_mut("offload_l2tp")?.set("1")?;
+        meshvpn.option_mut("mtu")?.set("1364")?;
+        meshvpn.option_mut("interface")?.set("mesh-vpn")?;
+        meshvpn.option_mut("secret")?.set(&fastd_secret_key)?;
+        meshvpn.option_mut("forward")?.set("0")?;
+        meshvpn.option_mut("persist_interface")?.set("0")?;
+        meshvpn
+            .option_mut("on_up")?
+            .set("ip link set dev $INTERFACE master bat0 && ip link set dev $INTERFACE up")?;
 
         for (i, peer) in self.config.fastd_peers.iter().enumerate() {
-            let section = format!("fastd.supernode{i}");
-            self.uci.set(&section, "peer")?;
-            self.uci.set(&format!("{section}.enabled"), "1")?;
-            self.uci.set(&format!("{section}.net"), "meshvpn")?;
-            self.uci.set(&format!("{section}.key"), &peer.pubkey)?;
+            let mut supernode = fastd.section("peer", format!("supernode{i}"))?;
+            supernode.option_mut("enabled")?.set("1")?;
+            supernode.option_mut("net")?.set("meshvpn")?;
+            supernode.option_mut("key")?.set(&peer.pubkey)?;
+
             let addr = peer
                 .host
                 .parse::<net::IpAddr>()
                 .ok()
                 .map(|ip| ip.to_string())
                 .unwrap_or_else(|| format!(r#""{}""#, peer.host)); // quote when not an IP
-            self.uci.set(
-                &format!("{section}.remote"),
-                &format!("{} port {}", addr, peer.port),
-            )?;
+            supernode
+                .option_mut("remote")?
+                .set(format!("{} port {}", addr, peer.port))?;
         }
 
-        self.uci.commit("fastd")?;
+        fastd.save()?;
+        fastd.commit()?;
         Ok(())
     }
 
     pub fn setup_wifi(&mut self) -> anyhow::Result<()> {
-        // find non-2ghz wifi interfaces
-        let devices: Vec<_> = self
-            .find_sections("wireless", "wifi-device", |uci, dev| {
-                Ok(uci.get(&format!("wireless.{dev}.band"))? == "2g")
-            })?
-            .collect();
+        let mut wireless = self
+            .uci
+            .package("wireless")?
+            .ok_or_else(|| anyhow!("wireless config package not found"))?;
 
-        for (i, dev) in devices.iter().enumerate() {
-            // enable device
-            self.uci.set(&format!("wireless.{dev}.disabled"), "0")?;
+        // find non-2ghz wifi interfaces
+        let devices = wireless.sections_by_type("wifi-device")?.filter_map(|s| {
+            s.option("band")
+                .ok()?
+                .get()
+                .ok()??
+                .to_str()
+                .filter(|band| *band != "2g")
+                .map(|_| s)
+        });
+
+        for (i, mut dev) in devices.enumerate() {
+            let Some(dev_name) = dev.name() else {
+                continue;
+            };
+
+            dev.option_mut("disabled")?.set("0")?;
 
             // configure freifunk SSID
-            self.uci
-                .set(&format!("wireless.freifunk{i}.device"), "radio1")?;
-            self.uci
-                .set(&format!("wireless.freifunk{i}.network"), "lan")?;
-            self.uci.set(&format!("wireless.freifunk{i}.mode"), "ap")?;
-            self.uci
-                .set(&format!("wireless.freifunk{i}.ssid"), "Freifunk Dev")?;
-            self.uci
-                .set(&format!("wireless.freifunk{i}.encryption"), "none")?;
+            let mut ffap = dev
+                .package()
+                .section("wifi-iface", format!("freifunk{i}"))?;
+            ffap.option_mut("device")?.set(dev_name)?;
+            ffap.option_mut("network")?.set("lan")?;
+            ffap.option_mut("mode")?.set("ap")?;
+            ffap.option_mut("ssid")?.set("Freifunk Dev")?;
+            ffap.option_mut("encryption")?.set("none")?;
         }
 
-        self.uci.commit("wireless")?;
+        wireless.save()?;
+        wireless.commit()?;
         Ok(())
     }
 }

@@ -8,8 +8,8 @@ anyhow = "1.0.102"
 
 [dependencies.rust-uci]
 git = "https://github.com/ffddorf/rust-uci"
-rev = "29769d8803bf25a0c628ff7b7335f5660947a4f3"
-# path = "../rust-uci/rust-uci"
+rev = "2ff749c5d49cd0f004966b64daebbff78e2f288e"
+# path = "../../rust-uci/rust-uci"
 
 [features]
 vendor-uci = ["rust-uci/vendored"]
