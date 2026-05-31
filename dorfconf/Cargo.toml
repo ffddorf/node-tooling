@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+facet = "0.46.5"
+facet-json = "0.46.1"
 
 [dependencies.rust-uci]
 git = "https://github.com/ffddorf/rust-uci"
