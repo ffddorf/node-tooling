@@ -2462,7 +2462,7 @@ dependencies = [
 [[package]]
 name = "libuci-sys"
 version = "1.1.0"
-source = "git+https://github.com/ffddorf/rust-uci?rev=2ff749c5d49cd0f004966b64daebbff78e2f288e#2ff749c5d49cd0f004966b64daebbff78e2f288e"
+source = "git+https://github.com/ffddorf/rust-uci?rev=9c9bcd55ecefc270d831983b1fdbb1489aceba81#9c9bcd55ecefc270d831983b1fdbb1489aceba81"
 dependencies = [
  "bindgen",
  "cmake",
@@ -3648,7 +3648,7 @@ dependencies = [
 [[package]]
 name = "rust-uci"
 version = "0.1.6"
-source = "git+https://github.com/ffddorf/rust-uci?rev=2ff749c5d49cd0f004966b64daebbff78e2f288e#2ff749c5d49cd0f004966b64daebbff78e2f288e"
+source = "git+https://github.com/ffddorf/rust-uci?rev=9c9bcd55ecefc270d831983b1fdbb1489aceba81#9c9bcd55ecefc270d831983b1fdbb1489aceba81"
 dependencies = [
  "libc",
  "libuci-sys",

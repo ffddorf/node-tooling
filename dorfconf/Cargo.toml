@@ -10,7 +10,7 @@ facet-json = "0.46.1"
 
 [dependencies.rust-uci]
 git = "https://github.com/ffddorf/rust-uci"
-rev = "2ff749c5d49cd0f004966b64daebbff78e2f288e"
+rev = "9c9bcd55ecefc270d831983b1fdbb1489aceba81"
 # path = "../../rust-uci/rust-uci"
 
 [features]
