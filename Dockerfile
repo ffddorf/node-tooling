@@ -11,7 +11,7 @@ ENV PATH=/root/.cargo/bin:$PATH
 
 # --- toolchain docker targets starting here
 
-FROM ubuntu:24.04 AS toolchain
+FROM ubuntu:26.04 AS toolchain
 
 RUN apt-get update && \
   apt-get -y --no-install-recommends install \
@@ -49,7 +49,7 @@ RUN make toolchain/install
 RUN make package/rust/host/compile
 RUN make package/system/uci/compile
 
-FROM ubuntu:24.04 AS buildroot
+FROM ubuntu:26.04 AS buildroot
 
 RUN apt-get update && \
   apt-get -yq install \
